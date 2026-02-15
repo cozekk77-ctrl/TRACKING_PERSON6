@@ -1,416 +1,669 @@
-<!DOCTYPE html>
-<html lang="ms">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>View All Check-ins</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+import React, { useState, useEffect } from 'react';
+
+export default function CheckInApp() {
+  const [view, setView] = useState('form'); // 'form' or 'tracker'
+  const [nama, setNama] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [checkIns, setCheckIns] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Load all check-ins on mount and when view changes
+  useEffect(() => {
+    if (view === 'tracker') {
+      loadCheckIns();
+    }
+  }, [view]);
+
+  // Auto-refresh every 3 seconds when in tracker view
+  useEffect(() => {
+    if (view === 'tracker') {
+      const interval = setInterval(() => {
+        loadCheckIns();
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [view]);
+
+  const loadCheckIns = async () => {
+    try {
+      const result = await window.storage.list('checkin:', true);
+      if (result && result.keys) {
+        const allCheckins = [];
+        for (const key of result.keys) {
+          const data = await window.storage.get(key, true);
+          if (data && data.value) {
+            allCheckins.push(JSON.parse(data.value));
+          }
         }
+        allCheckins.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        setCheckIns(allCheckins);
+      }
+    } catch (error) {
+      console.error('Error loading check-ins:', error);
+    }
+  };
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
+  const getCurrentPosition = () => {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Browser anda tidak support geolocation'));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        resolve,
+        (error) => {
+          let message = 'Tidak dapat mendapatkan lokasi';
+          switch(error.code) {
+            case error.PERMISSION_DENIED:
+              message = 'Sila ALLOW akses lokasi pada browser anda! Pergi ke Settings > Privacy > Location dan aktifkan.';
+              break;
+            case error.POSITION_UNAVAILABLE:
+              message = 'Lokasi tidak tersedia. Pastikan GPS aktif.';
+              break;
+            case error.TIMEOUT:
+              message = 'Request timeout. Cuba lagi.';
+              break;
+          }
+          reject(new Error(message));
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 30000,
+          maximumAge: 0
         }
+      );
+    });
+  };
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            padding: 30px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  const getAddressFromCoordinates = async (lat, lng) => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        {
+          headers: {
+            'User-Agent': 'CheckInApp/1.0'
+          }
         }
+      );
+      
+      if (!response.ok) throw new Error('Failed to get address');
+      
+      const data = await response.json();
+      return data.display_name || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    } catch (error) {
+      console.error('Geocoding error:', error);
+      return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    }
+  };
 
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 2px solid #e0e0e0;
+  const getDeviceInfo = () => {
+    const ua = navigator.userAgent;
+    let deviceType = 'Desktop';
+    let browser = 'Unknown';
+    let os = 'Unknown';
+
+    if (/mobile/i.test(ua)) deviceType = 'Mobile';
+    else if (/tablet/i.test(ua)) deviceType = 'Tablet';
+
+    if (ua.includes('Chrome')) browser = 'Chrome';
+    else if (ua.includes('Safari')) browser = 'Safari';
+    else if (ua.includes('Firefox')) browser = 'Firefox';
+    else if (ua.includes('Edge')) browser = 'Edge';
+
+    if (ua.includes('Windows')) os = 'Windows';
+    else if (ua.includes('Mac')) os = 'Mac OS';
+    else if (ua.includes('Android')) os = 'Android';
+    else if (ua.includes('iOS') || ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
+    else if (ua.includes('Linux')) os = 'Linux';
+
+    return { deviceType, browser, os };
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (!nama.trim()) {
+      setMessage('❌ Sila masukkan nama anda!');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('📍 Mendapatkan lokasi anda...');
+
+    try {
+      const position = await getCurrentPosition();
+      const { latitude, longitude, accuracy } = position.coords;
+
+      setMessage('🗺️ Mendapatkan alamat...');
+      const address = await getAddressFromCoordinates(latitude, longitude);
+      const deviceInfo = getDeviceInfo();
+
+      const timestamp = Date.now();
+      const checkinData = {
+        id: `checkin:${timestamp}`,
+        nama: nama.trim(),
+        latitude: latitude,
+        longitude: longitude,
+        accuracy: Math.round(accuracy),
+        address: address,
+        deviceType: deviceInfo.deviceType,
+        browser: deviceInfo.browser,
+        os: deviceInfo.os,
+        timestamp: new Date().toISOString(),
+        mapUrl: `https://www.google.com/maps?q=${latitude},${longitude}`
+      };
+
+      setMessage('💾 Menyimpan data...');
+      const result = await window.storage.set(checkinData.id, JSON.stringify(checkinData), true);
+      
+      if (result) {
+        setMessage(`✅ BERJAYA! ${nama} telah check-in di ${address}`);
+        setNama('');
+      } else {
+        throw new Error('Gagal menyimpan data');
+      }
+
+    } catch (error) {
+      console.error('Error:', error);
+      setMessage('❌ ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete check-in ini?')) return;
+    try {
+      await window.storage.delete(id, true);
+      loadCheckIns();
+    } catch (error) {
+      alert('Gagal delete');
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!window.confirm('⚠️ DELETE SEMUA CHECK-INS?')) return;
+    try {
+      const result = await window.storage.list('checkin:', true);
+      if (result && result.keys) {
+        for (const key of result.keys) {
+          await window.storage.delete(key, true);
         }
+      }
+      setCheckIns([]);
+      alert('✅ Semua check-ins telah didelete');
+    } catch (error) {
+      alert('❌ Gagal clear all');
+    }
+  };
 
-        .header h1 {
-            color: #667eea;
-            font-size: 32px;
-            margin-bottom: 10px;
-        }
+  const getTimeAgo = (timestamp) => {
+    const seconds = Math.floor((new Date() - new Date(timestamp)) / 1000);
+    if (seconds < 60) return 'Baru sahaja';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} minit lalu`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} jam lalu`;
+    return `${Math.floor(seconds / 86400)} hari lalu`;
+  };
 
-        .header p {
-            color: #666;
-            font-size: 16px;
-        }
+  const filteredCheckIns = checkIns.filter(c => 
+    c.nama.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    c.address.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
+  const stats = {
+    total: checkIns.length,
+    today: checkIns.filter(c => new Date(c.timestamp).toDateString() === new Date().toDateString()).length,
+    unique: new Set(checkIns.map(c => c.nama.toLowerCase())).size
+  };
 
-        .stat-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 20px;
-            border-radius: 15px;
-            text-align: center;
-        }
+  // ============ FORM VIEW (For Public) ============
+  if (view === 'form') {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%)',
+        padding: '20px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: 'system-ui, -apple-system, sans-serif'
+      }}>
+        <div style={{ maxWidth: '600px', width: '100%' }}>
+          {/* Header */}
+          <div style={{
+            textAlign: 'center',
+            color: '#fff',
+            marginBottom: '30px'
+          }}>
+            <h1 style={{
+              fontSize: '20px',
+              letterSpacing: '3px',
+              fontWeight: '300',
+              marginBottom: '5px',
+              opacity: '0.8'
+            }}>
+              REAL-TIME LOCATION
+            </h1>
+          </div>
 
-        .stat-card .number {
-            font-size: 36px;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .stat-card .label {
-            font-size: 14px;
-            opacity: 0.9;
-        }
-
-        .controls {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-
-        .search-box {
-            flex: 1;
-            min-width: 200px;
-        }
-
-        .search-box input {
-            width: 100%;
-            padding: 12px 20px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-        }
-
-        .search-box input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 10px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            font-size: 14px;
-        }
-
-        .btn-primary {
-            background: #667eea;
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background: #5568d3;
-        }
-
-        .btn-danger {
-            background: #dc3545;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #c82333;
-        }
-
-        .checkins-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 20px;
-        }
-
-        .checkin-card {
-            background: #f8f9fa;
-            border-radius: 15px;
-            padding: 20px;
-            border-left: 5px solid #667eea;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .checkin-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-        }
-
-        .checkin-card .header-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .checkin-card .name {
-            font-size: 20px;
-            font-weight: bold;
-            color: #333;
-        }
-
-        .checkin-card .time {
-            font-size: 12px;
-            color: #999;
-        }
-
-        .checkin-card .location {
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 10px;
-            line-height: 1.5;
-        }
-
-        .checkin-card .coordinates {
-            font-size: 12px;
-            color: #999;
-            font-family: monospace;
-            margin-bottom: 15px;
-        }
-
-        .checkin-card .actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .checkin-card .btn-small {
-            flex: 1;
-            padding: 8px 12px;
-            font-size: 12px;
-            text-decoration: none;
-            text-align: center;
-            display: inline-block;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #999;
-        }
-
-        .empty-state svg {
-            width: 100px;
-            height: 100px;
-            margin-bottom: 20px;
-            opacity: 0.3;
-        }
-
-        .empty-state h3 {
-            font-size: 24px;
-            margin-bottom: 10px;
-        }
-
-        .empty-state p {
-            font-size: 16px;
-        }
-
-        @media (max-width: 768px) {
-            .checkins-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .controls {
-                flex-direction: column;
-            }
-
-            .search-box {
-                width: 100%;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📍 SEMUA CHECK-INS</h1>
-            <p>Real-Time Location Tracking Dashboard</p>
-        </div>
-
-        <div class="stats">
-            <div class="stat-card">
-                <div class="number" id="totalCheckins">0</div>
-                <div class="label">Total Check-ins</div>
+          {/* Main Form Card */}
+          <div style={{
+            background: 'linear-gradient(135deg, #8B0000 0%, #DC143C 100%)',
+            borderRadius: '20px',
+            padding: '40px',
+            boxShadow: '0 20px 60px rgba(220, 20, 60, 0.4)',
+            border: '2px solid rgba(220, 20, 60, 0.3)'
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              marginBottom: '30px',
+              color: '#fff'
+            }}>
+              <div style={{
+                width: '4px',
+                height: '30px',
+                background: '#ff4444',
+                marginRight: '15px',
+                borderRadius: '2px'
+              }}></div>
+              <h2 style={{
+                fontSize: '24px',
+                fontWeight: '600',
+                letterSpacing: '2px',
+                margin: 0
+              }}>
+                CHECK-IN FORM
+              </h2>
             </div>
-            <div class="stat-card">
-                <div class="number" id="todayCheckins">0</div>
-                <div class="label">Hari Ini</div>
+
+            <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{
+                  display: 'block',
+                  color: '#fff',
+                  fontWeight: '600',
+                  marginBottom: '10px',
+                  fontSize: '14px',
+                  letterSpacing: '1px'
+                }}>
+                  NAMA PENUH
+                </label>
+                <input
+                  type="text"
+                  value={nama}
+                  onChange={(e) => setNama(e.target.value)}
+                  placeholder="Masukkan nama anda..."
+                  disabled={loading}
+                  style={{
+                    width: '100%',
+                    padding: '18px',
+                    border: 'none',
+                    borderRadius: '12px',
+                    fontSize: '16px',
+                    background: 'rgba(255, 255, 255, 0.95)',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                style={{
+                  width: '100%',
+                  padding: '20px',
+                  background: loading ? '#666' : 'linear-gradient(135deg, #DC143C 0%, #8B0000 100%)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '12px',
+                  fontSize: '16px',
+                  fontWeight: '700',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  letterSpacing: '2px',
+                  boxShadow: loading ? 'none' : '0 5px 20px rgba(0, 0, 0, 0.3)',
+                  transition: 'all 0.3s'
+                }}
+              >
+                {loading ? '⏳ PROCESSING...' : 'SUBMIT LOKASI SAYA'}
+              </button>
+            </form>
+
+            {message && (
+              <div style={{
+                marginTop: '20px',
+                padding: '15px',
+                background: 'rgba(0, 0, 0, 0.3)',
+                borderRadius: '10px',
+                color: '#fff',
+                fontSize: '14px',
+                lineHeight: '1.6',
+                whiteSpace: 'pre-line'
+              }}>
+                {message}
+              </div>
+            )}
+          </div>
+
+          {/* Owner Access Button */}
+          <button
+            onClick={() => setView('tracker')}
+            style={{
+              marginTop: '20px',
+              padding: '15px',
+              background: 'rgba(255, 255, 255, 0.1)',
+              color: '#fff',
+              border: '2px solid rgba(255, 255, 255, 0.2)',
+              borderRadius: '12px',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              width: '100%',
+              letterSpacing: '1px'
+            }}
+          >
+            🔐 OWNER ACCESS - VIEW ALL CHECK-INS
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ============ TRACKER VIEW (For Owner) ============
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%)',
+      padding: '20px',
+      fontFamily: 'system-ui, -apple-system, sans-serif'
+    }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        {/* Header */}
+        <div style={{
+          textAlign: 'center',
+          color: '#fff',
+          marginBottom: '30px',
+          paddingTop: '20px'
+        }}>
+          <h1 style={{
+            fontSize: '28px',
+            letterSpacing: '4px',
+            fontWeight: '300',
+            marginBottom: '10px'
+          }}>
+            📍 REAL-TIME LOCATION TRACKER
+          </h1>
+          <p style={{ fontSize: '14px', opacity: '0.7' }}>
+            Owner Dashboard - Semua Check-ins
+          </p>
+        </div>
+
+        {/* Stats Cards */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gap: '20px',
+          marginBottom: '30px'
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #8B0000 0%, #DC143C 100%)',
+            padding: '25px',
+            borderRadius: '15px',
+            textAlign: 'center',
+            boxShadow: '0 10px 30px rgba(220, 20, 60, 0.3)'
+          }}>
+            <div style={{ fontSize: '36px', fontWeight: 'bold', color: '#fff', marginBottom: '5px' }}>
+              {stats.total}
             </div>
-            <div class="stat-card">
-                <div class="number" id="uniqueUsers">0</div>
-                <div class="label">Pengguna Unik</div>
+            <div style={{ fontSize: '14px', color: 'rgba(255, 255, 255, 0.8)', letterSpacing: '1px' }}>
+              TOTAL CHECK-INS
             </div>
-        </div>
+          </div>
 
-        <div class="controls">
-            <div class="search-box">
-                <input 
-                    type="text" 
-                    id="searchInput" 
-                    placeholder="🔍 Cari nama atau lokasi..."
-                    autocomplete="off"
-                >
+          <div style={{
+            background: 'linear-gradient(135deg, #8B0000 0%, #DC143C 100%)',
+            padding: '25px',
+            borderRadius: '15px',
+            textAlign: 'center',
+            boxShadow: '0 10px 30px rgba(220, 20, 60, 0.3)'
+          }}>
+            <div style={{ fontSize: '36px', fontWeight: 'bold', color: '#fff', marginBottom: '5px' }}>
+              {stats.today}
             </div>
-            <button class="btn btn-primary" onclick="refreshData()">
-                🔄 Refresh
-            </button>
-            <button class="btn btn-danger" onclick="clearAllData()">
-                🗑️ Clear All
-            </button>
+            <div style={{ fontSize: '14px', color: 'rgba(255, 255, 255, 0.8)', letterSpacing: '1px' }}>
+              HARI INI
+            </div>
+          </div>
+
+          <div style={{
+            background: 'linear-gradient(135deg, #8B0000 0%, #DC143C 100%)',
+            padding: '25px',
+            borderRadius: '15px',
+            textAlign: 'center',
+            boxShadow: '0 10px 30px rgba(220, 20, 60, 0.3)'
+          }}>
+            <div style={{ fontSize: '36px', fontWeight: 'bold', color: '#fff', marginBottom: '5px' }}>
+              {stats.unique}
+            </div>
+            <div style={{ fontSize: '14px', color: 'rgba(255, 255, 255, 0.8)', letterSpacing: '1px' }}>
+              UNIQUE USERS
+            </div>
+          </div>
         </div>
 
-        <div class="checkins-grid" id="checkinsGrid">
-            <!-- Check-ins will be loaded here -->
+        {/* Controls */}
+        <div style={{
+          display: 'flex',
+          gap: '15px',
+          marginBottom: '30px',
+          flexWrap: 'wrap'
+        }}>
+          <input
+            type="text"
+            placeholder="🔍 Cari nama atau lokasi..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{
+              flex: '1',
+              minWidth: '250px',
+              padding: '15px 20px',
+              background: 'rgba(255, 255, 255, 0.1)',
+              border: '2px solid rgba(255, 255, 255, 0.2)',
+              borderRadius: '12px',
+              color: '#fff',
+              fontSize: '14px',
+              outline: 'none'
+            }}
+          />
+          <button
+            onClick={() => setView('form')}
+            style={{
+              padding: '15px 30px',
+              background: 'linear-gradient(135deg, #8B0000 0%, #DC143C 100%)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '12px',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              letterSpacing: '1px'
+            }}
+          >
+            ◀ BACK TO FORM
+          </button>
+          <button
+            onClick={loadCheckIns}
+            style={{
+              padding: '15px 30px',
+              background: 'rgba(255, 255, 255, 0.1)',
+              color: '#fff',
+              border: '2px solid rgba(255, 255, 255, 0.2)',
+              borderRadius: '12px',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              letterSpacing: '1px'
+            }}
+          >
+            🔄 REFRESH
+          </button>
+          <button
+            onClick={handleClearAll}
+            style={{
+              padding: '15px 30px',
+              background: 'rgba(220, 20, 60, 0.2)',
+              color: '#ff4444',
+              border: '2px solid #ff4444',
+              borderRadius: '12px',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              letterSpacing: '1px'
+            }}
+          >
+            🗑️ CLEAR ALL
+          </button>
         </div>
 
-        <div class="empty-state" id="emptyState" style="display: none;">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <h3>Tiada Check-ins Lagi</h3>
-            <p>Mula check-in untuk melihat lokasi di sini</p>
-        </div>
-    </div>
-
-    <script>
-        let allCheckins = [];
-
-        // Load data on page load
-        loadData();
-
-        // Search functionality
-        document.getElementById('searchInput').addEventListener('input', (e) => {
-            const searchTerm = e.target.value.toLowerCase();
-            filterCheckins(searchTerm);
-        });
-
-        function loadData() {
-            allCheckins = JSON.parse(localStorage.getItem('checkins') || '[]');
-            updateStats();
-            displayCheckins(allCheckins);
-        }
-
-        function updateStats() {
-            // Total check-ins
-            document.getElementById('totalCheckins').textContent = allCheckins.length;
-
-            // Today's check-ins
-            const today = new Date().toDateString();
-            const todayCount = allCheckins.filter(c => 
-                new Date(c.timestamp).toDateString() === today
-            ).length;
-            document.getElementById('todayCheckins').textContent = todayCount;
-
-            // Unique users
-            const uniqueNames = new Set(allCheckins.map(c => c.nama.toLowerCase()));
-            document.getElementById('uniqueUsers').textContent = uniqueNames.size;
-        }
-
-        function displayCheckins(checkins) {
-            const grid = document.getElementById('checkinsGrid');
-            const emptyState = document.getElementById('emptyState');
-
-            if (checkins.length === 0) {
-                grid.style.display = 'none';
-                emptyState.style.display = 'block';
-                return;
-            }
-
-            grid.style.display = 'grid';
-            emptyState.style.display = 'none';
-
-            grid.innerHTML = checkins.map((checkin, index) => {
-                const date = new Date(checkin.timestamp);
-                const timeAgo = getTimeAgo(date);
-                
-                return `
-                    <div class="checkin-card">
-                        <div class="header-row">
-                            <div class="name">${checkin.nama}</div>
-                            <div class="time">${timeAgo}</div>
-                        </div>
-                        <div class="location">📍 ${checkin.address}</div>
-                        <div class="coordinates">
-                            🗺️ ${checkin.latitude.toFixed(6)}, ${checkin.longitude.toFixed(6)}
-                        </div>
-                        <div class="actions">
-                            <a href="${checkin.mapUrl}" target="_blank" class="btn btn-primary btn-small">
-                                🗺️ Google Maps
-                            </a>
-                            <button onclick="deleteCheckin(${index})" class="btn btn-danger btn-small">
-                                🗑️ Delete
-                            </button>
-                        </div>
+        {/* Check-ins List */}
+        {filteredCheckIns.length === 0 ? (
+          <div style={{
+            textAlign: 'center',
+            padding: '60px 20px',
+            background: 'rgba(255, 255, 255, 0.05)',
+            borderRadius: '20px',
+            color: '#666'
+          }}>
+            <div style={{ fontSize: '60px', marginBottom: '20px' }}>📍</div>
+            <h3 style={{ fontSize: '24px', marginBottom: '10px', color: '#999' }}>
+              Tiada Check-ins Lagi
+            </h3>
+            <p style={{ fontSize: '16px' }}>
+              Tunggu orang check-in untuk melihat lokasi mereka di sini
+            </p>
+          </div>
+        ) : (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))',
+            gap: '20px'
+          }}>
+            {filteredCheckIns.map((checkin, index) => (
+              <div
+                key={index}
+                style={{
+                  background: 'rgba(139, 0, 0, 0.2)',
+                  border: '2px solid rgba(220, 20, 60, 0.3)',
+                  borderRadius: '15px',
+                  padding: '25px',
+                  transition: 'all 0.3s',
+                  cursor: 'pointer'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-5px)';
+                  e.currentTarget.style.boxShadow = '0 15px 40px rgba(220, 20, 60, 0.4)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
+              >
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'start',
+                  marginBottom: '15px'
+                }}>
+                  <div>
+                    <div style={{
+                      fontSize: '20px',
+                      fontWeight: 'bold',
+                      color: '#fff',
+                      marginBottom: '5px'
+                    }}>
+                      {checkin.nama}
                     </div>
-                `;
-            }).join('');
-        }
+                    <div style={{ fontSize: '12px', color: '#999' }}>
+                      {getTimeAgo(checkin.timestamp)}
+                    </div>
+                  </div>
+                  <div style={{
+                    background: 'rgba(220, 20, 60, 0.3)',
+                    padding: '5px 12px',
+                    borderRadius: '20px',
+                    fontSize: '11px',
+                    color: '#ff6b6b',
+                    fontWeight: '600'
+                  }}>
+                    {checkin.deviceType}
+                  </div>
+                </div>
 
-        function filterCheckins(searchTerm) {
-            if (!searchTerm) {
-                displayCheckins(allCheckins);
-                return;
-            }
+                <div style={{ color: '#ccc', fontSize: '14px', marginBottom: '15px', lineHeight: '1.6' }}>
+                  <div style={{ marginBottom: '8px' }}>
+                    📍 <strong style={{ color: '#fff' }}>Lokasi:</strong><br/>
+                    {checkin.address}
+                  </div>
+                  <div style={{ marginBottom: '8px' }}>
+                    🗺️ <strong style={{ color: '#fff' }}>Coordinates:</strong><br/>
+                    {checkin.latitude.toFixed(6)}, {checkin.longitude.toFixed(6)}
+                  </div>
+                  <div style={{ marginBottom: '8px' }}>
+                    📱 <strong style={{ color: '#fff' }}>Device:</strong> {checkin.os} • {checkin.browser}
+                  </div>
+                  <div style={{ marginBottom: '8px' }}>
+                    🎯 <strong style={{ color: '#fff' }}>Accuracy:</strong> ±{checkin.accuracy}m
+                  </div>
+                  <div>
+                    🕐 <strong style={{ color: '#fff' }}>Masa:</strong><br/>
+                    {new Date(checkin.timestamp).toLocaleString('ms-MY')}
+                  </div>
+                </div>
 
-            const filtered = allCheckins.filter(c => 
-                c.nama.toLowerCase().includes(searchTerm) ||
-                c.address.toLowerCase().includes(searchTerm)
-            );
-
-            displayCheckins(filtered);
-        }
-
-        function deleteCheckin(index) {
-            if (!confirm('Adakah anda pasti untuk delete check-in ini?')) return;
-
-            allCheckins.splice(index, 1);
-            localStorage.setItem('checkins', JSON.stringify(allCheckins));
-            loadData();
-        }
-
-        function clearAllData() {
-            if (!confirm('Adakah anda pasti untuk delete SEMUA check-ins? Tindakan ini tidak boleh dibatalkan!')) return;
-
-            localStorage.removeItem('checkins');
-            allCheckins = [];
-            loadData();
-        }
-
-        function refreshData() {
-            loadData();
-            document.getElementById('searchInput').value = '';
-            alert('✅ Data telah di-refresh!');
-        }
-
-        function getTimeAgo(date) {
-            const seconds = Math.floor((new Date() - date) / 1000);
-            
-            const intervals = {
-                tahun: 31536000,
-                bulan: 2592000,
-                minggu: 604800,
-                hari: 86400,
-                jam: 3600,
-                minit: 60,
-                saat: 1
-            };
-
-            for (const [unit, secondsInUnit] of Object.entries(intervals)) {
-                const interval = Math.floor(seconds / secondsInUnit);
-                if (interval >= 1) {
-                    return `${interval} ${unit} lalu`;
-                }
-            }
-
-            return 'Baru sahaja';
-        }
-    </script>
-</body>
-</html>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <a
+                    href={checkin.mapUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: 'linear-gradient(135deg, #8B0000 0%, #DC143C 100%)',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '10px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      textAlign: 'center',
+                      textDecoration: 'none',
+                      letterSpacing: '1px'
+                    }}
+                  >
+                    🗺️ GOOGLE MAPS
+                  </a>
+                  <button
+                    onClick={() => handleDelete(checkin.id)}
+                    style={{
+                      padding: '12px 20px',
+                      background: 'rgba(220, 20, 60, 0.2)',
+                      color: '#ff4444',
+                      border: '2px solid #ff4444',
+                      borderRadius: '10px',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
